@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no"/>
+  <title>RD × Particle (Diffusiophoresis-like) Demo</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <canvas id="view"></canvas>
+
+  <div id="ui">
+    <button id="btnReset" title="全リセット (R)">Reset</button>
+    <label class="inline">
+      <input type="checkbox" id="chkParticles" />
+      粒子を表示
+    </label>
+    <label class="inline">
+      μ <input id="mu" type="range" min="0" max="2" step="0.01" value="0.65">
+      <span id="muVal">0.65</span>
+    </label>
+  </div>
+
+  <div id="hint">クリック／タップで「Seed」を打つ（局所反応を強く）<br>
+  P: 粒子の表示切り替え / R: 全リセット / window.kill() で停止</div>
+
+  <script src="main.js"></script>
+</body>
+</html>
