@@ -2,28 +2,30 @@
 <html lang="ja">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no"/>
-  <title>RD × Particle (Diffusiophoresis-like) Demo</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Reaction–Diffusion (RD)</title>
+  <meta name="theme-color" content="#0b0f14" />
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" href="icons/icon-192.png" sizes="192x192">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <canvas id="view"></canvas>
-
-  <div id="ui">
-    <button id="btnReset" title="全リセット (R)">Reset</button>
-    <label class="inline">
-      <input type="checkbox" id="chkParticles" />
-      粒子を表示
-    </label>
-    <label class="inline">
-      μ <input id="mu" type="range" min="0" max="2" step="0.01" value="0.65">
-      <span id="muVal">0.65</span>
-    </label>
-  </div>
-
-  <div id="hint">クリック／タップで「Seed」を打つ（局所反応を強く）<br>
-  P: 粒子の表示切り替え / R: 全リセット / window.kill() で停止</div>
-
-  <script src="main.js"></script>
+  <header class="toolbar" role="banner">
+    <div class="brand">RD</div>
+    <div class="spacer"></div>
+    <button id="btnReset" title="リセット (R)">Reset</button>
+    <button id="btnPause" title="一時停止/再開 (Space)">Pause</button>
+    <button id="btnSave" title="PNG保存">Save</button>
+  </header>
+  <main class="stage" role="main">
+    <canvas id="view" aria-label="Reaction–Diffusion canvas" tabindex="0"></canvas>
+    <div class="hint">Tap / Click で Seed。R で全リセット。P で粒子表示切替。</div>
+  </main>
+  <footer class="footer">
+    <small>Imperfect Turing 風の連続場 RD デモ（論文の厳密再現ではありません）</small>
+  </footer>
+  <script defer src="main.js"></script>
 </body>
 </html>

@@ -1,262 +1,185 @@
-(() => {
-'use strict';
+// Minimal RD (Gray–Scott) + optional particles drift; mobile-safe sizing.
+// NOTE: This is not a strict reproduction of diffusiophoresis experiments.
 
-// ===== Canvas & DPI-safe sizing =====
-const canvas = document.getElementById('view');
-const ctx = canvas.getContext('2d');
-if(!ctx) { throw new Error('2D context not available'); }
+const SIM_W = 256, SIM_H = 256;
+let u, v, u2, v2, running = true, raf = null;
+let t = 0;
+const params = { Du: 0.16, Dv: 0.08, F: 0.036, k: 0.065, stepsPerFrame: 20, particleVis: false, mu: 0.4 };
 
-const DPR = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
-function fitCanvas() {
-  const w = Math.floor(window.innerWidth);
-  const h = Math.floor(window.innerHeight);
-  canvas.width  = Math.floor(w * DPR);
-  canvas.height = Math.floor(h * DPR);
-  canvas.style.width = w + 'px';
-  canvas.style.height= h + 'px';
-}
-fitCanvas();
-window.addEventListener('resize', fitCanvas);
+// Particles (hidden by default; can be toggled with 'P')
+const Np = 1200;
+let px = new Float32Array(Np), py = new Float32Array(Np);
 
-// ===== RD grid (Gray–Scott-like) =====
-const gridW = 256, gridH = 256; // internal simulation resolution
-let U = new Float32Array(gridW * gridH);
-let V = new Float32Array(gridW * gridH);
-let U2 = new Float32Array(gridW * gridH);
-let V2 = new Float32Array(gridW * gridH);
+const cvs = document.getElementById('view');
+const ctx = cvs.getContext('2d', {willReadFrequently:true});
+const img = ctx.createImageData(SIM_W, SIM_H);
 
-// parameters
-const Du = 0.16, Dv = 0.08;
-let F = 0.036, k = 0.062; // decent maze/dots region
-const dt = 1.0;
-const lap = (A, x, y) => {
-  // 5-point stencil with Neumann boundary (clamp)
-  const ix = (x, y) => Math.max(0, Math.min(gridW-1, x)) + Math.max(0, Math.min(gridH-1, y))*gridW;
-  const c = A[ix(x,y)];
-  const l = A[ix(x-1,y)];
-  const r = A[ix(x+1,y)];
-  const u = A[ix(x,y-1)];
-  const d = A[ix(x,y+1)];
-  return -4*c + l + r + u + d;
-};
+// UI
+const btnReset = document.getElementById('btnReset');
+const btnPause = document.getElementById('btnPause');
+const btnSave  = document.getElementById('btnSave');
 
-function initField() {
-  U.fill(1.0);
-  V.fill(0.0);
-  // a few random seeds
-  for (let n=0;n<6;n++) {
-    const cx = Math.floor(Math.random()*gridW);
-    const cy = Math.floor(Math.random()*gridH);
-    seedField(Math.floor(gridW*0.45 + Math.random()*gridW*0.1),
-              Math.floor(gridH*0.45 + Math.random()*gridH*0.1), 10);
-  }
-}
+btnReset.addEventListener('click', () => resetAll());
+btnPause.addEventListener('click', () => { running = !running; btnPause.textContent = running?'Pause':'Resume'; if(running) loop(); });
+btnSave.addEventListener('click', savePNG);
 
-function seedField(cx, cy, r=10) {
-  const r2 = r*r;
-  for (let y=cy-r; y<=cy+r; y++) {
-    for (let x=cx-r; x<=cx+r; x++) {
-      if (x<0||x>=gridW||y<0||y>=gridH) continue;
-      const dx=x-cx, dy=y-cy;
-      if (dx*dx + dy*dy <= r2) {
-        const i = x + y*gridW;
-        U[i] = 0.5;
-        V[i] = 0.25;
-      }
-    }
-  }
-}
-
-function stepRD(iters=8) {
-  for (let it=0; it<iters; it++) {
-    for (let y=0; y<gridH; y++) {
-      for (let x=0; x<gridW; x++) {
-        const i = x + y*gridW;
-        const u = U[i], v = V[i];
-        const uvv = u*v*v;
-        const du = Du*lap(U,x,y) - uvv + F*(1-u);
-        const dv = Dv*lap(V,x,y) + uvv - (F+k)*v;
-        U2[i] = u + du*dt;
-        V2[i] = v + dv*dt;
-      }
-    }
-    // swap
-    [U,U2] = [U2,U];
-    [V,V2] = [V2,V];
-  }
-}
-
-// ===== Particles driven by ∇V (diffusiophoresis-like) =====
-const N = 3000;
-let px = new Float32Array(N);
-let py = new Float32Array(N);
-let vx = new Float32Array(N);
-let vy = new Float32Array(N);
-let showParticles = false;
-let mu = 0.65;
-
-function randRange(a,b){ return a + Math.random()*(b-a); }
-function initParticles() {
-  for (let i=0;i<N;i++){
-    px[i] = Math.random()*gridW;
-    py[i] = Math.random()*gridH;
-    vx[i] = 0; vy[i] = 0;
-  }
-}
-
-function sampleGradV(x, y) {
-  // bilinear sample of central differences on V
-  const xi = Math.max(1, Math.min(gridW-2, x));
-  const yi = Math.max(1, Math.min(gridH-2, y));
-  const x0 = Math.floor(xi), y0 = Math.floor(yi);
-  const fx = xi - x0, fy = yi - y0;
-  const i = (x,y)=> x + y*gridW;
-  // central diff at four neighbors
-  function g(ix,iy){
-    const dvx = 0.5*(V[i(ix+1,iy)] - V[i(ix-1,iy)]);
-    const dvy = 0.5*(V[i(ix,iy+1)] - V[i(ix,iy-1)]);
-    return [dvx, dvy];
-  }
-  const g00 = g(x0, y0);
-  const g10 = g(x0+1, y0);
-  const g01 = g(x0, y0+1);
-  const g11 = g(x0+1, y0+1);
-  const gx = (g00[0]*(1-fx)*(1-fy) + g10[0]*fx*(1-fy) + g01[0]*(1-fx)*fy + g11[0]*fx*fy);
-  const gy = (g00[1]*(1-fx)*(1-fy) + g10[1]*fx*(1-fy) + g01[1]*(1-fx)*fy + g11[1]*fx*fy);
-  return [gx, gy];
-}
-
-function stepParticles() {
-  const noise = 0.15;
-  for (let i=0;i<N;i++){
-    const gxgy = sampleGradV(px[i], py[i]);
-    // diffusiophoretic drift + mild persistence + noise
-    vx[i] = 0.9*vx[i] + mu*gxgy[0] + (Math.random()*2-1)*noise;
-    vy[i] = 0.9*vy[i] + mu*gxgy[1] + (Math.random()*2-1)*noise;
-    px[i] += vx[i];
-    py[i] += vy[i];
-    // reflect at bounds
-    if (px[i] < 1){ px[i]=1; vx[i]*=-0.6; }
-    if (py[i] < 1){ py[i]=1; vy[i]*=-0.6; }
-    if (px[i] > gridW-2){ px[i]=gridW-2; vx[i]*=-0.6; }
-    if (py[i] > gridH-2){ py[i]=gridH-2; vy[i]*=-0.6; }
-  }
-}
-
-// ===== Rendering =====
-const fieldImg = ctx.createImageData(gridW, gridH);
-function render() {
-  // upscale with nearest-neighbor to preserve crispness
-  // 1) draw RD field to offscreen ImageData
-  const data = fieldImg.data;
-  for (let i=0;i<gridW*gridH;i++){
-    const v = V[i];
-    // nice neutral palette: dark background -> lavender/teal highlights
-    // map v to 0..1
-    const t = Math.max(0, Math.min(1, v*3.0));
-    // cubic smooth
-    const s = t*t*(3-2*t);
-    // palette
-    const r = 16 + Math.floor(180*s);
-    const g = 24 + Math.floor(140*s);
-    const b = 32 + Math.floor(220*s);
-    const o = i*4;
-    data[o+0]=r; data[o+1]=g; data[o+2]=b; data[o+3]=255;
-  }
-
-  // 2) paint to canvas scaled
-  // putImageData at 1:1 to an internal canvas, then drawImage for scaling.
-  // To save allocations, reuse a hidden canvas
-  if (!render._tmp) {
-    render._tmp = document.createElement('canvas');
-    render._tmp.width = gridW; render._tmp.height = gridH;
-    render._ctx = render._tmp.getContext('2d');
-  }
-  render._ctx.putImageData(fieldImg, 0, 0);
-
-  // clear main
-  ctx.clearRect(0,0,canvas.width,canvas.height);
-  // scale to fit (cover) while preserving aspect
-  const scale = Math.min(canvas.width/gridW, canvas.height/gridH);
-  const drawW = Math.floor(gridW*scale);
-  const drawH = Math.floor(gridH*scale);
-  const dx = Math.floor((canvas.width - drawW)/2);
-  const dy = Math.floor((canvas.height - drawH)/2);
-  ctx.imageSmoothingEnabled = false;
-  ctx.drawImage(render._tmp, 0,0, gridW,gridH, dx,dy, drawW,drawH);
-
-  if (showParticles) {
-    ctx.save();
-    ctx.translate(dx,dy);
-    ctx.scale(scale, scale);
-    ctx.globalAlpha = 0.8;
-    for (let i=0;i<N;i++){
-      const x = px[i], y = py[i];
-      ctx.beginPath();
-      ctx.arc(x, y, 0.8, 0, Math.PI*2);
-      ctx.fillStyle = '#ffffff';
-      ctx.fill();
-    }
-    ctx.restore();
-  }
-}
-
-// ===== Interaction =====
-function canvasToGrid(ev){
-  const rect = canvas.getBoundingClientRect();
-  const x = (ev.clientX - rect.left) * (canvas.width/rect.width);
-  const y = (ev.clientY - rect.top)  * (canvas.height/rect.height);
-  // invert the cover transform:
-  const scale = Math.min(canvas.width/gridW, canvas.height/gridH);
-  const drawW = gridW*scale, drawH = gridH*scale;
-  const dx = (canvas.width - drawW)/2;
-  const dy = (canvas.height - drawH)/2;
-  const gx = (x - dx)/scale;
-  const gy = (y - dy)/scale;
-  return [Math.floor(gx), Math.floor(gy)];
-}
-
-canvas.addEventListener('pointerdown', (ev)=>{
-  const [gx, gy] = canvasToGrid(ev);
-  if (!Number.isFinite(gx)) return;
-  seedField(gx, gy, 10);
+window.addEventListener('resize', sizeCanvas);
+cvs.addEventListener('pointerdown', (ev) => {
+  const rect = cvs.getBoundingClientRect();
+  const x = Math.floor((ev.clientX - rect.left) / rect.width  * SIM_W);
+  const y = Math.floor((ev.clientY - rect.top)  / rect.height * SIM_H);
+  seed(x,y,6);
 });
 
 document.addEventListener('keydown', (e)=>{
-  if (e.key === 'p' || e.key === 'P') { showParticles = !showParticles; }
-  if (e.key === 'r' || e.key === 'R') { strongReset(); }
+  if(e.key==='r' || e.key==='R') resetAll();
+  if(e.key===' ') { e.preventDefault(); btnPause.click(); }
+  if(e.key==='p' || e.key==='P') params.particleVis = !params.particleVis;
 });
 
-// UI wiring
-document.getElementById('btnReset').addEventListener('click', strongReset);
-document.getElementById('chkParticles').addEventListener('change', (e)=>{
-  showParticles = e.target.checked;
-});
-const muSlider = document.getElementById('mu');
-const muVal = document.getElementById('muVal');
-const syncMu = () => { mu = parseFloat(muSlider.value); muVal.textContent = mu.toFixed(2); };
-muSlider.addEventListener('input', syncMu); syncMu();
-
-// ===== Control loop =====
-let running = true;
-window.kill = () => { running = false; };
-window.reset = () => { strongReset(); };
-
-function strongReset(){
-  initField();
-  initParticles();
+function init(){
+  u = new Float32Array(SIM_W*SIM_H);
+  v = new Float32Array(SIM_W*SIM_H);
+  u2 = new Float32Array(SIM_W*SIM_H);
+  v2 = new Float32Array(SIM_W*SIM_H);
+  for(let i=0;i<u.length;i++){ u[i]=1.0; v[i]=0.0; }
+  // Initial seed in center
+  for(let dy=-8; dy<=8; dy++){
+    for(let dx=-8; dx<=8; dx++){
+      const x = (SIM_W>>1)+dx, y=(SIM_H>>1)+dy;
+      if(x>=0&&x<SIM_W&&y>=0&&y<SIM_H){
+        const i = y*SIM_W+x; v[i]=1.0;
+      }
+    }
+  }
+  // Particles random
+  for(let i=0;i<Np;i++){ px[i]=Math.random()*SIM_W; py[i]=Math.random()*SIM_H; }
+  sizeCanvas();
+  t = 0;
 }
 
-function frame(){
-  if (!running) return;
-  stepRD(8);
-  stepParticles();
-  render();
-  requestAnimationFrame(frame);
+function sizeCanvas(){
+  // The canvas bitmap resolution is SIM_W x SIM_H, CSS size is responsive (square)
+  cvs.width  = SIM_W;
+  cvs.height = SIM_H;
+  // CSS sizing is handled by CSS aspect-ratio; here we ensure devicePixelRatio crispness
+  const dpr = Math.max(1, Math.min(2, window.devicePixelRatio||1));
+  ctx.imageSmoothingEnabled = false;
 }
 
-// boot
-strongReset();
-requestAnimationFrame(frame);
+function idx(x,y){ return y*SIM_W + x; }
+function laplacian(field, x, y){
+  const xm = (x-1+SIM_W) % SIM_W, xp = (x+1) % SIM_W;
+  const ym = (y-1+SIM_H) % SIM_H, yp = (y+1) % SIM_H;
+  return 0.05*(field[idx(xm,ym)] + field[idx(xp,ym)] + field[idx(xm,yp)] + field[idx(xp,yp)]) +
+         0.2 *(field[idx(x,ym)]  + field[idx(x,yp)]  + field[idx(xm,y)]  + field[idx(xp,y)]) +
+         (-1.0)*field[idx(x,y)];
+}
 
-})();
+function step(){
+  const {Du,Dv,F,k} = params;
+  for(let s=0; s<params.stepsPerFrame; s++){
+    for(let y=0;y<SIM_H;y++){
+      for(let x=0;x<SIM_W;x++){
+        const i = idx(x,y);
+        const U = u[i], V = v[i];
+        const dU = Du*laplacian(u,x,y) - U*V*V + F*(1.0 - U);
+        const dV = Dv*laplacian(v,x,y) + U*V*V - (F + k)*V;
+        u2[i] = U + dU;
+        v2[i] = V + dV;
+      }
+    }
+    // swap
+    [u,u2] = [u2,u];
+    [v,v2] = [v2,v];
+  }
+  // Particle drift (optional view)
+  if(params.particleVis){
+    for(let i=0;i<Np;i++){
+      const x = Math.max(1, Math.min(SIM_W-2, px[i]));
+      const y = Math.max(1, Math.min(SIM_H-2, py[i]));
+      const gx = v[idx(Math.floor(x+1),Math.floor(y))] - v[idx(Math.floor(x-1),Math.floor(y))];
+      const gy = v[idx(Math.floor(x),Math.floor(y+1))] - v[idx(Math.floor(x),Math.floor(y-1))];
+      px[i] += -params.mu*gx + (Math.random()-0.5)*0.1;
+      py[i] += -params.mu*gy + (Math.random()-0.5)*0.1;
+      if(px[i]<0) px[i]+=SIM_W; if(px[i]>=SIM_W) px[i]-=SIM_W;
+      if(py[i]<0) py[i]+=SIM_H; if(py[i]>=SIM_H) py[i]-=SIM_H;
+    }
+  }
+}
+
+function draw(){
+  // Palette: cool dark -> soft light
+  for(let y=0;y<SIM_H;y++){
+    for(let x=0;x<SIM_W;x++){
+      const i = idx(x,y);
+      const val = v[i]; // 0..1 approx
+      // Smooth two-tone gradient based on v
+      const t = Math.min(1, Math.max(0, val));
+      // from #0b0f14 to a blend of accent colors
+      const r = (1-t)*0x0b + t*0x9a;
+      const g = (1-t)*0x0f + t*0xd7;
+      const b = (1-t)*0x14 + t*0xfc;
+      const j = i*4;
+      img.data[j+0]=r; img.data[j+1]=g; img.data[j+2]=b; img.data[j+3]=255;
+    }
+  }
+  ctx.putImageData(img,0,0);
+
+  if(params.particleVis){
+    ctx.fillStyle='rgba(255,255,255,0.7)';
+    for(let i=0;i<Math.min(Np,800);i++){
+      ctx.fillRect(px[i]|0, py[i]|0, 1, 1);
+    }
+  }
+}
+
+function loop(){
+  if(!running) return;
+  step();
+  draw();
+  raf = requestAnimationFrame(loop);
+  t++;
+}
+
+function seed(cx,cy,r=6){
+  for(let y=-r;y<=r;y++){
+    for(let x=-r;x<=r;x++){
+      const xx=cx+x, yy=cy+y;
+      if(xx<0||yy<0||xx>=SIM_W||yy>=SIM_H) continue;
+      if(x*x+y*y<=r*r){
+        const i = idx(xx,yy);
+        v[i] = 1.0; // add inhibitor locally to spark spots
+      }
+    }
+  }
+}
+
+function resetAll(){
+  cancelAnimationFrame(raf);
+  init();
+  running = true;
+  btnPause.textContent = 'Pause';
+  loop();
+}
+
+// Expose helpers for console hard reset
+window.kill = function(){ running = false; cancelAnimationFrame(raf); };
+window.reset = resetAll;
+
+init();
+loop();
+
+function savePNG(){
+  // upscale export
+  const scale = 2;
+  const tmp = document.createElement('canvas');
+  tmp.width = SIM_W*scale; tmp.height = SIM_H*scale;
+  const c2 = tmp.getContext('2d');
+  c2.imageSmoothingEnabled = 'high';
+  c2.drawImage(cvs,0,0,tmp.width,tmp.height);
+  const a = document.createElement('a');
+  a.download = 'rd.png';
+  a.href = tmp.toDataURL('image/png');
+  a.click();
+}
